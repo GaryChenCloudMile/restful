@@ -3,7 +3,6 @@ import numpy as np, pandas as pd, yaml, codecs, os, tensorflow as tf, json, re
 from .. import env
 from . import utils
 from io import StringIO, BytesIO
-from google.cloud.storage.blob import Blob
 from datetime import datetime
 
 from collections import OrderedDict
@@ -48,7 +47,6 @@ class Schema(object):
         :param raw_paths: multiple raw training csv files
         """
         self.conf_path = conf_path
-        # TODO: wait for fetch GCS training data to parse
         self.raw_paths = raw_paths
 
         # self.parsed_conf_path_ = '{}.parsed'.format(conf_path)
@@ -91,6 +89,17 @@ class Schema(object):
         for _, r in df_conf.iterrows():
             dtypes[r[Schema.ID]] = tf.int32 if r[Schema.M_DTYPE] == Schema.CATG else tf.float32
         return dtypes
+
+    @property
+    def multi_cols(self):
+        return self.df_conf_.query(
+            "{}.notnull() and {} == '{}' and {} == True".format(
+                self.TYPE, self.M_DTYPE, self.CATG, self.IS_MULTI)).id.tolist()
+
+    @property
+    def cols_with_lens(self):
+        cols = self.cols.copy()
+        return cols + ['{}_len'.format(col)for col in self.multi_cols]
 
     def init(self):
         return self.extract(self.read_conf()).check().fit()
@@ -211,8 +220,6 @@ class Schema(object):
 
         :return:
         """
-        from datetime import  datetime
-
         df_conf = self.df_conf_.query("{}.notnull()".format(Schema.TYPE))
         dtype = self.raw_dtype(df_conf)
         col_states = OrderedDict()
@@ -456,20 +463,21 @@ class Loader(object):
         else:
             data = data.copy()
 
-        ret = {}
-        col_states = self.schema.col_states_
+        ret = pd.DataFrame(data)
         pad = tf.keras.preprocessing.sequence.pad_sequences
         # loop parsed feature columns, cause maybe there're some noise columns in data
         for colname in self.schema.features:
-            col_meta = col_states[colname]
-            val = col_meta.transform(data[colname])
+            col_meta = self.schema.col_states_[colname]
+            val = col_meta.transform(ret[colname])
             # if multi columns, create sequence columns
             if hasattr(col_meta, 'is_multi') and col_meta.is_multi:
                 lens = list(map(len, val))
                 ret[colname] = pad(val, padding="post", maxlen=max(lens)).tolist()
-                ret[colname + '_len'] = np.array(lens).tolist()
+                ret[colname + '_len'] = lens
             else:
                 ret[colname] = val.tolist()
+
+        ret = ret.to_dict('records')
 
         # TODO hack for debug online prediction
         # cols = ['query_movie_ids', 'genres', 'avg_rating', 'year', 'candidate_movie_id',

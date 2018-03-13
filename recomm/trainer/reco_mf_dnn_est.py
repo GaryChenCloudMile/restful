@@ -233,11 +233,17 @@ class ModelMfDNN(object):
             evaluation_hooks=[])
 
     def input_fn(self, filenames, n_batch=128, n_epoch=None, shuffle=True):
-        cols = ['query_movie_ids', 'genres', 'avg_rating', 'year', 'candidate_movie_id', 'rating']
-        defaults = [[''], [''], [], [], [0], [0]]
-        multi_cols = ('query_movie_ids', 'genres')
+        df_conf = self.schema.df_conf_.query('{}.notnull()'.format(self.schema.TYPE))
+        defaults = []
+        for _, r in df_conf.iterrows():
+            if r[self.schema.M_DTYPE] == self.schema.CATG:
+                defaults.append([''] if r[self.schema.IS_MULTI] else [0])
+            else:
+                defaults.append([])
+        multi_cols = self.schema.multi_cols
 
         def _input_fn():
+            cols = self.schema.cols.copy()
             def parse_csv(value):
                 data = tf.decode_csv(value, record_defaults=defaults)
                 features = OrderedDict(zip(cols, data))
@@ -250,18 +256,33 @@ class ModelMfDNN(object):
                 for m_col in multi_cols:
                     name = '{}_len'.format(m_col)
                     feat[name] = tf.size(feat[m_col])
-                    cols.append(name)
                 return feat
 
             dataset = tf.data.TextLineDataset(filenames)
             dataset = dataset.map(parse_csv, num_parallel_calls=4)
             dataset = dataset.map(add_seq_cols, num_parallel_calls=4)
+
             if shuffle:
                 dataset = dataset.shuffle(n_batch * 10, seed=seed)
             dataset = dataset.repeat(n_epoch)
-            dataset = dataset.padded_batch(n_batch, OrderedDict(zip(cols, ([None], [None], [], [], [], [], [], [], []))))
+
+            # if got multi columns, we need padded_batch method, otherwise batch method
+            has_multi = (df_conf[self.schema.M_DTYPE] == self.schema.CATG) & \
+                        (df_conf[self.schema.IS_MULTI] == True)
+            if sum(has_multi):
+                # TODO hack
+                print()
+                print(has_multi)
+                print(OrderedDict(zip(cols, tuple([None] if e else [] for e in has_multi))))
+
+                dataset = dataset.padded_batch(n_batch,
+                            OrderedDict(zip(cols, tuple([None] if e else [] for e in has_multi))))
+            else:
+                dataset = dataset.batch(n_batch)
+
             features = dataset.make_one_shot_iterator().get_next()
-            return features, features.pop('rating')
+            # Note that type of schema.label is list !
+            return features, features.pop(self.schema.label[0])
         return _input_fn
 
     def input_fn2(self, filenames, n_batch=128, n_epoch=None, shuffle=True):
@@ -301,8 +322,6 @@ class ModelMfDNN(object):
         for name, tensor in self.features.items():
             placeholders[name] = tf.placeholder(shape=tensor.get_shape().as_list(), dtype=tensor.dtype, name=name)
 
-        # TODO:hack
-        print('\nplaceholders', placeholders)
         return tf.estimator.export.ServingInputReceiver(placeholders, placeholders)
         # import json
         #

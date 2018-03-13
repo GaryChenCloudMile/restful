@@ -1,4 +1,4 @@
-import os, yaml, logging, logging.config, codecs
+import yaml, logging, logging.config, codecs
 
 class Logging(object):
     instance = None

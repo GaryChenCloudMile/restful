@@ -1,4 +1,4 @@
-import yaml, os, tensorflow as tf, json, time, pandas as pd
+import yaml, json, time, pandas as pd
 
 from . import env
 from . import reco_mf_dnn_est as est
@@ -176,17 +176,18 @@ class Service(object):
         deploy_info = self.deploy_info(p)
 
         # gcloud predict and persistent to file for debug
-        with flex.io('./data.json').as_writer('w') as f:
-            for r in data_for_model:
-                f.stream.write(json.dumps(r) + '\n')
+        # with flex.io('./data.json').as_writer('w') as f:
+        #     for r in data_for_model:
+        #         f.stream.write(json.dumps(r) + '\n')
         # with flex.io('./data.json').as_writer('w') as f:
         #     json.dump(data_for_model, f.stream)
 
         # python restful api predict
         model_uri = 'projects/{}/models/{}'.format(env.PROJECT_ID, deploy_info.get('model_name'))
         ml = self.find_ml()
-        return {'response': ml.projects().predict(
-            name=model_uri, body={'instances': data_for_model}).execute()}
+        # return data type must be in records mode
+        result = ml.projects().predict(name=model_uri, body={'instances': data_for_model}).execute()
+        return [rec.get('predictions')[0] for rec in result.get('predictions')]
 
         # commands = '''
         #     gcloud ml-engine predict --model {}  \

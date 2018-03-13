@@ -19,13 +19,14 @@ from django.urls import path
 from django.conf.urls import url
 from rest_framework.routers import SimpleRouter, DefaultRouter
 from django.urls import include
-
 from recomm import views as recomm
-
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     # path('api/recomm/', include('recomm.urls')),
-    url(r'^api/recomm/(?P<method>\w+)/', recomm.entry, name='test'),
+    url(r'^api/recomm/(?P<method>\w+)/', recomm.ViewsRecomm.as_view({
+        'get': 'entry',
+        'post': 'entry'
+    }), name='recomm'),
     path('api-auth/', include('rest_framework.urls')),
 ]

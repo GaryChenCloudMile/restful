@@ -16,10 +16,10 @@ ERR_CDE = 'err_cde'
 ERR_MSG = 'err_msg'
 
 CREDENTIAL_NAME = environment_vars.CREDENTIALS
-os.environ[CREDENTIAL_NAME] = 'auth.json'
+os.environ[CREDENTIAL_NAME] = 'D:/Python/notebook/restful/auth.json'
 
 PROJECT_ID = 'training-recommendation-engine'
-PROJECT_PATH = os.path.abspath('..')
+PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class Logging(object):
     instance = None
