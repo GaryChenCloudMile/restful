@@ -36,17 +36,17 @@ class Service(object):
                               parsed_conf_path=p.parsed_conf_path,
                               raw_paths=p.raw_paths)
 
-        loader.transform(p, reset=False, valid_size=.3)
+        loader.transform(p, reset=p.reset_parsed_conf, valid_size=.3)
         return loader.schema
 
     def get_model(self, p):
         with flex.io(p.parsed_conf_path).as_reader('r') as f:
             schema = flex.Schema.unserialize(f.stream)
-        return est.ModelMfDNN(hparam=p, schema=schema, n_items=9125, n_genres=20)
+        return est.ModelMfDNN(hparam=p, schema=schema)
 
     def train(self, p, schema):
         self.logger.info('received params: {}'.format(p.to_dict() if isinstance(p, pd.Series) else p))
-        model = est.ModelMfDNN(hparam=p, schema=schema, n_items=9125, n_genres=20)
+        model = est.ModelMfDNN(hparam=p, schema=schema)
         train_input = model.input_fn([p.train_file], n_epoch=1, n_batch=p.n_batch)
         valid_input = model.input_fn([p.valid_file], n_epoch=1, n_batch=p.n_batch, shuffle=False)
 
@@ -66,12 +66,6 @@ class Service(object):
             yaml.dump(deploy_info, f.stream)
 
         return model
-
-    def init_model(self, p):
-        self.logger.info('received params: {}'.format(p))
-        with flex.io(p.parsed_conf_path).as_reader('r') as f:
-            schema = flex.Schema.unserialize(f.stream)
-        return est.ModelMfDNN(hparam=p, schema=schema, n_items=9125, n_genres=20)
 
     def find_ml(self):
         credentials = GoogleCredentials.get_application_default()

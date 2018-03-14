@@ -18,6 +18,9 @@ class ViewsRecomm(viewsets.ModelViewSet):
         ret = {}
         s = datetime.now()
         try:
+            assert method in ('gen_data', 'train_submit', 'model_info', 'deploy',
+                              'transform', 'online_predict', 'describe'),\
+                '{} not recognized'.format(method)
             params = pd.Series(dict(req.data)).map(lambda e: e[0] if len(e) == 1 else e)
             self.logger.info('params: {}'.format(params))
 

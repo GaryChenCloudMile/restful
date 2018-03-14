@@ -1,4 +1,4 @@
-import argparse, os, pandas as pd, yaml, json
+import argparse, os, pandas as pd, yaml, json, re
 
 from datetime import datetime
 
@@ -33,7 +33,21 @@ class Ctrl(object):
         p.at[self.RAW_DIR] = conf[self.RAW_DIR]
         p.at[self.MODEL_ID] = conf[self.MODEL_ID]
         if p.get('runtime_version') is None:
-            p.at['runtime_version'] = '1.4'
+            p.at['runtime_version'] = '1.5'
+        # whether to destroy previous build parsed config
+        if p.get('reset_parsed_conf') is None:
+            p.at['reset_parsed_conf'] = True
+
+        if p.get('scale_tier') is None:
+            p.at['scale_tier'] = 'basic'
+        else:
+            assert p.scale_tier in ('basic', 'standard-1'), 'allow [basic, standard-1] only!'
+
+        if p.get('train_steps') is None:
+            p.at['train_steps'] = 1000
+
+        if p.get('eval_steps') is None:
+            p.at['eval_steps'] = 300
 
         # for cloud ml engine, del environment_vars.CREDENTIALS, or credential will invoke error
         if not p.get('is_local'):
@@ -114,17 +128,16 @@ class Ctrl(object):
                 schema = self.service.unser_parsed_conf(p.parsed_conf_path)
 
             p.at['n_batch'] = 128
-            if p.get('train_steps') is None:
-                # training about 10 epochs
-                tr_steps = self.count_steps(schema.tr_count_, p.n_batch)
-                p.at['train_steps'] = tr_steps * 3
+            # if p.get('train_steps') is None:
+            #     # training about 10 epochs
+            #     tr_steps = self.count_steps(schema.tr_count_, p.n_batch)
+            #     p.at['train_steps'] = tr_steps * 3
+            #
+            # if p.get('eval_steps') is None:
+            #     # training about 10 epochs
+            #     vl_steps = self.count_steps(schema.vl_count_, p.n_batch)
+            #     p.at['eval_steps'] = vl_steps
 
-            if p.get('eval_steps') is None:
-                # training about 10 epochs
-                vl_steps = self.count_steps(schema.vl_count_, p.n_batch)
-                p.at['eval_steps'] = vl_steps
-
-            p.at['dim'] = 16
             # save once per epoch, cancel this in case of saving bad model when encounter overfitting
             p.at['save_every_steps'] = None
             # local test has no job_id attr
@@ -145,21 +158,30 @@ class Ctrl(object):
         p = self.prepare(params)
         job_id = self.find_job_id(p)
 
+        args = p.to_dict()
+        args.update({'projet_path': env.PROJECT_PATH, 'job_id': job_id})
+        # TODO hack
+        print(p)
+
         commands = """
-            cd {} && \
-            gcloud ml-engine jobs submit training {} \
-                --job-dir {} \
+            cd {projet_path} && \
+            gcloud ml-engine jobs submit training {job_id} \
+                --job-dir {job_dir} \
                 --module-name trainer.ctrl \
                 --package-path trainer \
                 --region asia-east1 \
+                --scale-tier {scale_tier} \
                 --config config.yaml \
-                --runtime-version 1.4 \
+                --runtime-version {runtime_version} \
                 -- \
-                --train-steps 1000 \
+                --train-steps {train_steps} \
                 --method train \
-                --conf-path {} \
-                --job-id {}
-        """.strip().format(env.PROJECT_PATH, job_id, p.job_dir, p.conf_path, job_id)
+                --conf-path {conf_path} \
+                --job-id {job_id}
+        """.strip().format(**args)
+
+        commands = re.sub(r'\s{2,}', '\n', commands)
+        self.logger.info('{pid}: submit cmd:\n{commands}'.format(**{'pid': p.pid, 'commands': commands}))
 
         # authpath = utils.join(ctx, 'auth.json')
         # svc = discovery.build('ml', 'v1', credentials=GoogleCredentials.from_stream(authpath))
@@ -179,7 +201,10 @@ class Ctrl(object):
         #           .execute()
         ret = {}
         ret['job_id'] = job_id
-        ret['sumbmit_response'] = utils.cmd(commands)
+
+        # TODO hack
+        ret['sumbmit_response'] = commands
+        # ret['sumbmit_response'] = utils.cmd(commands)
         return ret
 
     def describe(self, params):
@@ -226,40 +251,6 @@ class Ctrl(object):
             deploy_conf = yaml.load(f.stream)
         return self.service.deploy(p, deploy_conf[self.EXPORT_PATH])
 
-    def train_local_submit(self, params):
-        """not working in windows envs, gcloud bind python version must be 2.7
-
-        :param params:
-        :return:
-        """
-        ret = {}
-        p = self.prepare(params)
-        try:
-            self.logger.info(utils.cmd("gcloud components list"))
-            commands = """
-                cd {} && \
-                gcloud ml-engine local train \
-                    --job-dir {} \
-                    --module-name trainer.ctrl \
-                    --package-path trainer \
-                    -- \
-                    --method train \
-                    --is-local true \
-                    --conf-path {}
-            """.strip() \
-                .format(env.PROJECT_PATH, p.job_dir, p.parsed_conf_path)
-            # .format(env.PROJECT_PATH, '../repo/foo/model', '../repo/foo/data/{}'.format(self.PARSED_FNAME))
-            ret['response'] = utils.cmd(commands)
-            ret[env.ERR_CDE] = '00'
-        except Exception as e:
-            ret[env.ERR_CDE] = '99'
-            ret[env.ERR_MSG] = str(e)
-            self.logger.error(e, exc_info=True)
-        finally:
-            pass
-
-        return ret
-
     def transform(self, params):
         ret = {}
         p = self.prepare(params)
@@ -298,15 +289,15 @@ class Ctrl(object):
     def test(self, params):
         self.logger.info('test req: {}'.format(params))
         p = self.prepare(params)
-        print(p)
+        p.at['raw_paths'] = self.service.find_raws(p)
+        loader = flex.Loader(conf_path=p.conf_path,
+                             parsed_conf_path=p.parsed_conf_path,
+                             raw_paths=p.raw_paths)
+        flex.io(p.parsed_conf_path).rm()
+        loader.check_schema()
 
-        p = self.prepare(params)
-        p.at['n_batch'] = 128
-        p.at['dim'] = 16
         model = self.service.get_model(p)
-
-        return model
-
+        return model, loader.schema
 
     def count_steps(self, n_total, n_batch):
         return n_total // n_batch + (1 if n_total % n_batch else 0)
@@ -347,7 +338,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--runtime-version',
-        default='1.4',
+        default='1.5',
         help='whether run on local machine instead of cloud',
     )
     args = parser.parse_args()

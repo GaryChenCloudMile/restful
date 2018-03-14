@@ -96,10 +96,11 @@ class Schema(object):
             "{}.notnull() and {} == '{}' and {} == True".format(
                 self.TYPE, self.M_DTYPE, self.CATG, self.IS_MULTI)).id.tolist()
 
-    @property
-    def cols_with_lens(self):
-        cols = self.cols.copy()
-        return cols + ['{}_len'.format(col)for col in self.multi_cols]
+    # @property
+    # def catg_cols(self):
+    #     return self.df_conf_.query(
+    #         "{}.notnull() and {} == '{}'".format(
+    #             self.TYPE, self.M_DTYPE, self.CATG)).id.tolist()
 
     def init(self):
         return self.extract(self.read_conf()).check().fit()
@@ -206,13 +207,12 @@ class Schema(object):
 
     def raw_dtype(self, df_conf):
         # str dtype for all catg + datetime columns, float dtype for all cont columns
-        catg = df_conf.query("{} == '{}'".format(Schema.M_DTYPE, Schema.CATG))
-        dt = df_conf.query("{} == '{}'".format(Schema.M_DTYPE, Schema.DATETIME))
-        cont = df_conf.query("{} == '{}'".format(Schema.M_DTYPE, Schema.CONT))
-        dt_catg = pd.concat([dt, catg], ignore_index=True)
-
-        dtype = dict(zip(dt_catg[Schema.ID], ['str'] * len(dt_catg)))
-        dtype.update(dict(zip(cont[Schema.ID], ['float'] * len(cont))))
+        dtype = OrderedDict()
+        for idx, r in df_conf.iterrows():
+            if r[self.M_DTYPE] in (self.CATG, self.DATETIME):
+                dtype[r[self.ID]] = 'str'
+            else:
+                dtype[r[self.ID]] = 'float'
         return dtype
 
     def fit(self):
@@ -299,7 +299,6 @@ class Schema(object):
         self.df_conf_.loc[valid_cond, 'col_state'] = \
             self.df_conf_.loc[valid_cond, Schema.ID].map(ser)
 
-        # output type: catg+multi to str
         return self
 
     def serialize(self, fp):
@@ -373,8 +372,7 @@ class Loader(object):
             # 2. if parsed_conf_path not exists, try re-parse raw config file (conf_path supplied by user)
             else:
                 self.logger.info('try to parse {} (user supplied) ...'.format(self.conf_path))
-                self.schema = Schema(self.conf_path, self.raw_paths)
-                self.schema.init()
+                self.schema = Schema(self.conf_path, self.raw_paths).init()
         return self
 
     def transform(self, params, chunksize=20000, reset=False, valid_size=None):
@@ -400,16 +398,13 @@ class Loader(object):
         vlw, rand_seq = None, None
         if valid_size:
             rand_seq = np.random.random(size=self.schema.count_)
-            # vlw = codecs.open('{}/data.te.{}'.format(tmp_ctx, utils.timestamp()), 'a')
             vlw = io(params.valid_file).as_writer(mode='w')
             self.schema.tr_count_ = int(sum(rand_seq > valid_size))
             self.schema.vl_count_ = int(sum(rand_seq <= valid_size))
 
-        # serialize to specific path
-        f = io(self.parsed_conf_path)
-        if not f.exists():
-            with f.as_writer('w'):
-                self.schema.serialize(f.stream)
+        # serialize schema config
+        with io(params.parsed_conf_path).as_writer('w') as f:
+            self.schema.serialize(f.stream)
 
         try:
             s = datetime.now()
@@ -418,6 +413,8 @@ class Loader(object):
                 # because we suggest split large file into multi chunks in a directory
                 # bio = BytesIO(utils.gcs_blob(fpath).download_as_string())
                 stream = io(fpath).as_reader().stream
+
+                self.logger.info('{}: column name and dtype:\n{}'.format(params.pid, pd.Series(dtype)))
                 for chunk in pd.read_csv(stream, names=columns, chunksize=chunksize, dtype=dtype):
                     chunk = chunk.where(pd.notnull(chunk), None)[self.schema.cols]
                     for colname, col in chunk.iteritems():
