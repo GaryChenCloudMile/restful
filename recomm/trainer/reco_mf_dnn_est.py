@@ -267,7 +267,6 @@ class ModelMfDNN(object):
         except:
             self.logger.warn( traceback.format_exc() )
 
-        # self.estimator_ = tf.estimator.Estimator(model_fn=self.graphing, model_dir=self.model_dir, config=run_config)
         self.estimator_ = self.create_est()
         tf.estimator.train_and_evaluate(self.estimator_, train_spec, eval_spec)
         return self

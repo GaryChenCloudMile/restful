@@ -15,8 +15,11 @@ VALID_FNAME = 'data.vl'
 ERR_CDE = 'err_cde'
 ERR_MSG = 'err_msg'
 
+# For local use! Not on GCE
 CREDENTIAL_NAME = environment_vars.CREDENTIALS
 os.environ[CREDENTIAL_NAME] = 'D:/Python/notebook/restful/auth.json'
+LOCAL_REPO = 'D:/Python/notebook/restful/repo'
+
 
 PROJECT_ID = 'training-recommendation-engine'
 PROJECT_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

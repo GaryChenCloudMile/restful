@@ -13,6 +13,8 @@ class Service(object):
     instance = None
     logger = env.logger('Service')
 
+
+
     def __init__(self):
         self.storage = None
 
@@ -36,6 +38,7 @@ class Service(object):
                               parsed_conf_path=p.parsed_conf_path,
                               raw_paths=p.raw_paths)
 
+        self.logger.info('repo path: {}'.format(p.repo))
         loader.transform(p, reset=p.reset_parsed_conf, valid_size=.3)
         return loader.schema
 
@@ -55,7 +58,7 @@ class Service(object):
             flex.io(utils.join(p.job_dir, 'export', p.export_name)).mkdirs()
             # os.makedirs(utils.join(p.job_dir, 'export', p.export_name))
 
-        model.fit(train_input, valid_input, reset=True)
+        model.fit(train_input, valid_input, reset=False)
 
         # export deploy info
         deploy_info = {}

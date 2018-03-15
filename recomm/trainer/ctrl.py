@@ -15,11 +15,17 @@ class Ctrl(object):
     GCS = 'gcs'
     BUCKET = 'bucket'
     PARSED_FNAME = 'parsed.yaml'
-    DEPLOY_FNAME = 'deploy.yaml'
+
     RESPONSE = 'response'
     MODEL_ID = 'model_id'
     JOB_ID = 'job_id'
     EXPORT_PATH = 'export_path'
+    DEPLOY_PATH = 'deploy_path'
+    STATE_FNAME = 'state.yaml'
+    DEPLOY_FNAME = 'deploy.yaml'
+
+    TRAINING = 'training'
+    PREPARED = 'prepared'
 
     logger = env.logger('Ctrl')
 
@@ -60,15 +66,24 @@ class Ctrl(object):
     def _check_project(self, p):
         # central repo
         p.at['repo'] = utils.join(env.HQ_BUCKET, p.pid, p.model_id)
-        if 'job_dir' not in p:
-            p.at['job_dir'] = utils.join(p.repo, env.MODEL)
         p.at['data_dir'] = utils.join(p.repo, env.DATA)
-        p.at['deploy_path'] = utils.join(p.repo, env.DATA, self.DEPLOY_FNAME)
+        self.find_job_dir(p)
+        p.at['state_path'] = utils.join(p.repo, env.DATA, self.STATE_FNAME)
         p.at['parsed_conf_path'] = utils.join(p.data_dir, self.PARSED_FNAME)
         return p
 
+    def find_job_dir(self, p):
+        for file in (self.TRAINING, self.PREPARED):
+            path = utils.join(p.data_dir, file)
+            f = flex.io(path)
+            if f.exists():
+                with f:
+                    p.at['job_dir'] = f.read('r').strip()
+                break
+
     def _prepare_cloud(self, p):
         self._check_project(p)
+
         p.at['train_file'] = utils.join(p.repo, env.DATA, env.TRAIN_FNAME)
         p.at['valid_file'] = utils.join(p.repo, env.DATA, env.VALID_FNAME)
         p.at['export_name'] = 'export_{}'.format(p.pid)
@@ -76,10 +91,11 @@ class Ctrl(object):
         return p
 
     def _prepare_local(self, p):
-        p.at['repo'] = utils.join(os.path.abspath('../repo'), p.pid, p.model_id)
-        p.at['job_dir'] = utils.join(p.repo, env.MODEL)
+        p.at['repo'] = utils.join(env.LOCAL_REPO, p.pid, p.model_id)
+        p.at['deploy_path'] = utils.join(p.repo, p.job_dir, self.DEPLOY_FNAME)
         p.at['data_dir'] = utils.join(p.repo, env.DATA)
-        p.at['deploy_path'] = utils.join(p.repo, env.DATA, self.DEPLOY_FNAME)
+        self.find_job_dir(p)
+        p.at['state_path'] = utils.join(p.repo, env.DATA, self.STATE_FNAME)
         p.at['parsed_conf_path'] = utils.join(p.data_dir, self.PARSED_FNAME)
         p.at['train_file'] = utils.join(p.repo, env.DATA, env.TRAIN_FNAME)
         p.at['valid_file'] = utils.join(p.repo, env.DATA, env.VALID_FNAME)
@@ -90,78 +106,29 @@ class Ctrl(object):
     def gen_data(self, params):
         self.service.gen_data(self.prepare(params))
 
-    def train(self, params):
-        """do model ml-engine traning
-
-        :param params: dict object storing user request data
-        :return: json message
-        """
-        ret = {}
-        try:
-            self.logger.info('received params: {}'.format(params))
-            # if run on compute engine or any vm on GCP, remove the environment_vars.CREDENTIALS environ var
-            if not params.get('is_local'):
-                self.logger.info('do cloud training')
-                env.remove_cred_envars()
-            else:
-                self.logger.info('do local training')
-
-            p = self.prepare(params)
-            schema = None
-            try:
-                parsed_conf = flex.io(p.parsed_conf_path)
-                # parsed_conf = utils.gcs_blob(p.parsed_conf_path)
-                assert parsed_conf.exists(), \
-                    'parsed config [{}] not found'.format(p.parsed_conf_path)
-
-                for trf in (p.train_file, p.valid_file):
-                    blob = flex.io(trf)
-                    assert blob.exists(), "training file [{}] not found".format(trf)
-            except Exception as e:
-                raise e
-                # try to gen training data
-                # self.logger.info('{}: try to generate training data...'.format(p.pid))
-                # schema = self.service.gen_data(p)
-
-            if schema is None:
-                self.logger.info('{}: try to unserialize {}'.format(p.pid, p.parsed_conf_path))
-                schema = self.service.unser_parsed_conf(p.parsed_conf_path)
-
-            p.at['n_batch'] = 128
-            # if p.get('train_steps') is None:
-            #     # training about 10 epochs
-            #     tr_steps = self.count_steps(schema.tr_count_, p.n_batch)
-            #     p.at['train_steps'] = tr_steps * 3
-            #
-            # if p.get('eval_steps') is None:
-            #     # training about 10 epochs
-            #     vl_steps = self.count_steps(schema.vl_count_, p.n_batch)
-            #     p.at['eval_steps'] = vl_steps
-
-            # save once per epoch, cancel this in case of saving bad model when encounter overfitting
-            p.at['save_every_steps'] = None
-            # local test has no job_id attr
-            if p.is_local:
-                p.at['job_id'] = self.find_job_id(p)
-
-            return self.service.train(p, schema)
-        except Exception as e:
-            self.logger.error(e, exc_info=True)
-            raise e
-        finally:
-            pass
-
-    def find_job_id(self, p):
+    def gen_job_id(self, p):
         return '{}_{}_{}'.format(p.pid, p.model_id, utils.timestamp()).replace('-', '_')
+
+    def gen_job_dir(self, p):
+        return utils.join(p.repo, '{}_{}'.format(env.MODEL, utils.timestamp()))
 
     def train_submit(self, params):
         p = self.prepare(params)
-        job_id = self.find_job_id(p)
 
+        tr = flex.io(utils.join(p.data_dir, self.TRAINING))
+        if tr.exists():
+            with tr as r:
+                raise Exception('{} under training or please wait for next training !'.\
+                format(r.read('r').strip()))
+
+        p.at['job_dir'] = utils.join(p.repo, '{}_{}'.format(env.MODEL, utils.timestamp()))
+        # write training status
+        with tr as w:
+            w.write(p.job_dir, 'w')
+
+        job_id = self.gen_job_id(p)
         args = p.to_dict()
         args.update({'projet_path': env.PROJECT_PATH, 'job_id': job_id})
-        # TODO hack
-        print(p)
 
         commands = """
             cd {projet_path} && \
@@ -180,8 +147,8 @@ class Ctrl(object):
                 --job-id {job_id}
         """.strip().format(**args)
 
-        commands = re.sub(r'\s{2,}', '\n', commands)
-        self.logger.info('{pid}: submit cmd:\n{commands}'.format(**{'pid': p.pid, 'commands': commands}))
+        self.logger.info('{pid}: submit cmd:\n{commands}'.format(
+            **{'pid': p.pid, 'commands': re.sub(r'\s{2,}', '\n  ', commands)}))
 
         # authpath = utils.join(ctx, 'auth.json')
         # svc = discovery.build('ml', 'v1', credentials=GoogleCredentials.from_stream(authpath))
@@ -201,11 +168,76 @@ class Ctrl(object):
         #           .execute()
         ret = {}
         ret['job_id'] = job_id
-
-        # TODO hack
-        ret['sumbmit_response'] = commands
-        # ret['sumbmit_response'] = utils.cmd(commands)
+        ret['sumbmit_response'] = utils.cmd(commands)
         return ret
+
+    def train(self, params):
+        """do model ml-engine traning
+
+        :param params: dict object storing user request data
+        :return: json message
+        """
+        self.logger.info('received params: {}'.format(params))
+        # if run on compute engine or any vm on GCP, remove the environment_vars.CREDENTIALS environ var
+        if not params.get('is_local'):
+            self.logger.info('do cloud training')
+            env.remove_cred_envars()
+        else:
+            self.logger.info('do local training')
+
+        p = self.prepare(params)
+        schema = None
+        try:
+            parsed_conf = flex.io(p.parsed_conf_path)
+            # parsed_conf = utils.gcs_blob(p.parsed_conf_path)
+            assert parsed_conf.exists(), \
+                'parsed config [{}] not found'.format(p.parsed_conf_path)
+
+            for trf in (p.train_file, p.valid_file):
+                blob = flex.io(trf)
+                assert blob.exists(), "training file [{}] not found".format(trf)
+        except Exception as e:
+            raise e
+            # try to gen training data
+            # self.logger.info('{}: try to generate training data...'.format(p.pid))
+            # schema = self.service.gen_data(p)
+
+        if schema is None:
+            self.logger.info('{}: try to unserialize {}'.format(p.pid, p.parsed_conf_path))
+            schema = self.service.unser_parsed_conf(p.parsed_conf_path)
+
+        # if on local, write training flag in data_dir, on cloud do this in train_submit function
+        if p.is_local:
+            # Run on local won't get job_dir params, so assign here
+            p.at['job_dir'] = self.gen_job_dir(p)
+            p.at['job_id'] = self.gen_job_id(p)
+            tr = flex.io(utils.join(p.data_dir, self.TRAINING))
+            if tr.exists():
+                with tr as r:
+                    raise Exception('{} under training or please wait for next training !'. \
+                                    format(r.read('r').strip()))
+
+        p.at['n_batch'] = 128
+        # if p.get('train_steps') is None:
+        #     # training about 10 epochs
+        #     tr_steps = self.count_steps(schema.tr_count_, p.n_batch)
+        #     p.at['train_steps'] = tr_steps * 3
+        #
+        # if p.get('eval_steps') is None:
+        #     # training about 10 epochs
+        #     vl_steps = self.count_steps(schema.vl_count_, p.n_batch)
+        #     p.at['eval_steps'] = vl_steps
+
+        # save once per epoch, cancel this in case of saving bad model when encounter overfitting
+        p.at['save_every_steps'] = None
+
+        # no matter what if train failed, remove the training status
+        try:
+            return self.service.train(p, schema)
+        finally:
+            flex.io(utils.join(p.data_dir, self.TRAINING)).rm()
+            with flex.io(utils.join(p.data_dir, self.PREPARED)) as w:
+                w.write(p.job_dir, 'w')
 
     def describe(self, params):
         p = self.prepare(params)
